@@ -70,6 +70,10 @@ const tools = [
 app.post('/investigate', async (req, res) => {
     const userQuestion = req.body.question;
     
+    if (!userQuestion) {
+        return res.status(400).json({ error: 'Question is required' });
+    }
+    
     const messages = [
         { 
             role: 'system', 
@@ -83,11 +87,12 @@ app.post('/investigate', async (req, res) => {
 
     try {
         while (turnCount < MAX_TURNS) {
-            turnCount++;
+            turnCount
+
             console.log(`\n--- Agent Turn ${turnCount} ---`);
 
             const response = await openai.chat.completions.create({
-                model: 'anthropic/claude-3.5-sonnet',
+                model: 'anthropic/claude-4.5-sonnet',
                 messages: messages,
                 tools: tools,
                 tool_choice: "auto"
@@ -103,9 +108,13 @@ app.post('/investigate', async (req, res) => {
                     console.log(`AI called tool: ${funcName} with args:`, args);
 
                     let toolResult = "";
-                    if (funcName === 'query_prometheus') toolResult = await queryPrometheus(args.query);
-                    if (funcName === 'search_logs') toolResult = await searchLogs(args.query);
-                    if (funcName === 'get_metric_catalog') toolResult = getMetricCatalog();
+                    if (funcName === 'query_prometheus') {
+                        toolResult = await queryPrometheus(args.query);
+                    } else if (funcName === 'search_logs') {
+                        toolResult = await searchLogs(args.query);
+                    } else if (funcName === 'get_metric_catalog') {
+                        toolResult = getMetricCatalog();
+                    }
 
                     messages.push({
                         role: 'tool',
@@ -123,6 +132,11 @@ app.post('/investigate', async (req, res) => {
         console.error("AI Error:", error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'healthy', service: 'ai-observer' });
 });
 
 app.listen(5000, () => console.log('AI Observability Service listening on port 5000'));
