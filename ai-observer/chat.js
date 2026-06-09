@@ -19,10 +19,18 @@ const colors = {
     magenta: '\x1b[35m'
 };
 
-const openai = new OpenAI({
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY,
-});
+// Initialize OpenAI client lazily
+let openai = null;
+
+function getOpenAI() {
+    if (!openai) {
+        openai = new OpenAI({
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: process.env.OPENROUTER_API_KEY,
+        });
+    }
+    return openai;
+}
 
 // Tool functions
 async function queryPrometheus(query) {
@@ -102,7 +110,7 @@ async function investigate(userQuestion) {
                 console.log(`${colors.dim}[Turn ${turnCount}/${MAX_TURNS}]${colors.reset}`);
             }
 
-            const response = await openai.chat.completions.create({
+            const response = await getOpenAI().chat.completions.create({
                 model: 'anthropic/claude-3.5-sonnet',
                 messages: conversationHistory,
                 tools: tools,
