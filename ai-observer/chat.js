@@ -112,7 +112,7 @@ async function investigate(userQuestion) {
             }
 
             const response = await getOpenAI().chat.completions.create({
-                model: 'anthropic/claude-3.5-sonnet:beta',
+                model: 'anthropic/claude-4.5-sonnet',
                 messages: conversationHistory,
                 tools: tools,
                 tool_choice: "auto"
