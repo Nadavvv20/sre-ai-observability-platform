@@ -1,0 +1,29 @@
+AI Log & Development Journey
+1. Model Choices & Why
+
+Model Used: anthropic/claude-4.5-sonnet
+
+Why: Chosen for its excellent coding capabilities, large context window (perfect for reading the provided .md blueprints and codebase), and its strong native support for tool use / function calling.
+
+Also used Gemini for first initializiation of the .md files.
+2. Tools & Plugins
+
+Cline (VS Code Extension): Used as the primary agent to read the initial blueprints, scan the codebase, and generate the instrumentation and infrastructure files.
+
+OpenRouter API: Used to power the LLM backend for both Cline and the final AI Observability Service.
+
+3. The Prompting Process
+
+Started by feeding initial.md, guidelines.md, and metric_catalog.md into Cline.
+
+Let the AI handle the heavy lifting of instrumenting the Node.js routes with Prometheus metrics and structured logging.
+
+Instructed the AI to generate the observability stack (docker-compose.yml, Prometheus configs, and Grafana dashboards).
+
+4. AI-Gap Awareness & The PII Error (Manual Fixes)
+
+The Incident: During the creation of the AI Observability Service, the AI got stuck. OpenRouter's API repeatedly blocked the requests, throwing a 403 PII detected error.
+
+The Cause: The AI's context window included mock data from the eCommerce application (e.g., test emails and the dummy Stripe credit card 4242 4242 4242 4242). The API's strict security filter falsely flagged this as sensitive real-world data and blocked the generation.
+
+The Resolution: I immediately stopped the AI from retrying. Instead of wasting time fighting the vendor's filter, I took over manually. I hand-coded the AI Agent's logic (index.js with the multi-turn function calling loop) and finalized the docker-compose.yml. This proved faster and ensured the architecture was exactly what was required.

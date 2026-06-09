@@ -395,6 +395,125 @@ open http://localhost:3000/datasources
 | GET | /metrics | — | Prometheus metrics |
 | GET | /healthz | — | Health check |
 
+AI Example:
+
+╔═══════════════════════════════════════════════════════════╗
+║         🤖 SRE AI Observer - Interactive Chat            ║
+╚═══════════════════════════════════════════════════════════╝
+
+Connected to: Prometheus (localhost:9090) & Elasticsearch (localhost:9200)
+Type your questions or commands:
+  • Ask about system status, errors, metrics
+  • Type 'help' for examples
+  • Type 'clear' to reset conversation
+  • Type 'exit' or 'quit' to leave
+
+You > check for any suspocious traffic
+AI > Investigating...
+
+🔧 Using tool: get_metric_catalog
+[Turn 2/5]
+🔧 Using tool: query_prometheus
+   Query: rate(ecommerce_http_requests_total[5m])
+🔧 Using tool: query_prometheus
+   Query: sum by (status_code) (rate(ecommerce_http_requests_total[5m]))
+🔧 Using tool: query_prometheus
+   Query: rate(ecommerce_cart_add_errors_total[5m])
+[Turn 3/5]
+🔧 Using tool: search_logs
+   Query: status_code:404
+🔧 Using tool: search_logs
+   Query: route:"/products" OR route:"/api/non-existent-route"
+[Turn 4/5]
+AI > The logs don't show detailed records, but the metrics clearly indicate suspicious activity.
+
+## Summary of Suspicious Traffic:
+
+**🔴 CONFIRMED THREAT:** High volume of 404 requests to non-existent endpoints
+
+**Indicators:**
+- **2.56 RPS** of 404 errors (88% of total traffic)
+- Targeting `/products` and `/api/non-existent-route`
+- Pattern consistent with **automated scanning/probing**
+
+**Recommended Actions:**
+1. **Immediate:** Implement rate limiting on 404 responses
+2. **Block/throttle** IPs generating excessive 404s
+3. **Monitor** for escalation to legitimate endpoints
+4. **Review WAF rules** to block common attack patterns
+5. **Alert security team** for potential reconnaissance activity
+
+**Business Impact:** 
+- Currently limited (legitimate traffic still flowing normally)
+- Risk of escalation to actual attack on valid endpoints
+- Increased load on backend systems processing invalid requests
+
+Would you like me to investigate any specific aspect further or check for impact on legitimate user traffic?
+
+You > What causing there errors? 
+AI > Investigating...
+
+🔧 Using tool: search_logs
+   Query: 404
+🔧 Using tool: search_logs
+   Query: level:error
+🔧 Using tool: search_logs
+   Query: route AND NOT status_code:200
+[Turn 2/5]
+🔧 Using tool: search_logs
+   Query: path:"/products"
+🔧 Using tool: search_logs
+   Query: user_agent OR client OR ip_address
+[Turn 3/5]
+AI > ## Root Cause Analysis
+
+Based on the log investigation, here's what's causing these 404 errors:
+
+### **Primary Cause: Automated Bot/Script Hammering Non-Existent Endpoints**
+
+**Evidence:**
+1. **Extremely regular timing pattern**: Requests to `/api/non-existent-route` are coming every ~100-120ms with machine-like precision
+   - 10:42:58.446 → 10:42:58.570 (124ms)
+   - 10:42:58.570 → 10:42:58.688 (118ms)
+   - 10:42:58.688 → 10:42:58.811 (123ms)
+   - Pattern continues consistently
+
+2. **Identical requests**: Every single request is exactly `GET /api/non-existent-route` - no variation
+
+3. **No session context**: Logs show no `session_id`, `user_agent`, or client information - these are not legitimate user requests
+
+4. **Ultra-low latency (0-1ms)**: The backend is responding instantly because the route doesn't exist - no database lookups, no business logic
+
+### **Likely Scenarios:**
+
+🔴 **Most Likely: Load Testing Tool or Monitoring Probe Gone Wrong**
+- A misconfigured health check, load tester, or monitoring script pointing at wrong endpoints
+- Could be internal testing that wasn't cleaned up
+
+🔴 **Security Scanning/Reconnaissance**
+- Automated vulnerability scanner probing for exposed APIs
+- The route name `/api/non-existent-route` suggests this might even be a test or synthetic probe
+
+🔴 **Broken Frontend/Client Integration**
+- A deployed application with hardcoded wrong API endpoints
+- However, less likely given the mechanical timing
+
+### **Why This is Happening:**
+
+The `/products` and `/api/non-existent-route` endpoints **don't exist in your application's routing table**. The backend is correctly returning 404s, but something (bot/script/misconfigured client) keeps requesting them.
+
+### **Immediate Action Items:**
+
+1. **Identify the source**: Enable request logging to capture IP addresses and User-Agent headers
+2. **Check for internal tools**: Review any monitoring, load testing, or health check configurations
+3. **Implement rate limiting**: Block sources generating >10 404s per minute
+4. **Add alerting**: Set up alerts for sustained 404 patterns on non-existent routes
+5. **Review recent deployments**: Check if any frontend/client code was recently deployed with incorrect API endpoints
+
+Would you like me to check if this traffic is impacting legitimate user requests or investigate any specific time period further?
+
+
+
 ## 🤝 Contributing
 
 This is a demonstration project showcasing SRE best practices and AI-powered observability.
