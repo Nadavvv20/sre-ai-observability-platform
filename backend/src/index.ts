@@ -3,6 +3,8 @@ import cors from 'cors';
 import { config } from './config.js';
 import { initSchema } from './db.js';
 import { HttpError } from './util.js';
+import { register, httpRequestsTotal } from './metrics.js';
+import { logInfo, logError } from './logger.js';
 import authRouter from './routes/auth.js';
 import productsRouter from './routes/products.js';
 import cartRouter from './routes/cart.js';
@@ -14,8 +16,44 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Middleware to track all HTTP requests
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const route = req.route?.path || req.path;
+    
+    // Track HTTP request metrics
+    httpRequestsTotal.inc({
+      method: req.method,
+      route,
+      status_code: res.statusCode,
+    });
+    
+    // Log request
+    logInfo({
+      service: 'http_server',
+      action: 'http_request',
+      message: `${req.method} ${route} ${res.statusCode}`,
+      latency_ms: duration,
+      method: req.method,
+      path: req.path,
+      status_code: res.statusCode,
+    });
+  });
+  
+  next();
+});
+
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true });
+});
+
+// Prometheus metrics endpoint
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
 });
 
 app.use('/api/auth', authRouter);

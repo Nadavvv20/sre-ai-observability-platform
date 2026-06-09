@@ -130,3 +130,9 @@ That's the assignment.
             ├── Payment.tsx
             └── OrderSuccess.tsx
 ```
+
+
+Error: 
+ {"message":"Request blocked: PII detected (invalid_json_after_redaction)","code":403,"modelId":"anthropic/claude-sonnet-4.5","providerId":"openrouter","details":{"code":403,"message":"Request blocked: PII detected (invalid_json_after_redaction)","metadata":{"error_type":"permission_denied"}}}
+
+During the instrumentation phase, the OpenRouter API blocked the LLM (403 PII detected) because it falsely identified mock user/payment data in the application codebase as real PII. To bypass this AI limitation without modifying the app's core logic, I instructed the AI to stop reading the payload details and move on

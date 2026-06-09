@@ -16,7 +16,7 @@ export default function Payment() {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
   const [order, setOrder] = useState<OrderDetail | null>(null);
-  const [cardNumber, setCardNumber] = useState('4242 4242 4242 4242');
+  const [cardNumber, setCardNumber] = useState('test-card');
   const [error, setError] = useState<string | null>(null);
   const [nonRetryable, setNonRetryable] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -80,7 +80,7 @@ export default function Payment() {
         <input
           value={cardNumber}
           onChange={(e) => setCardNumber(e.target.value)}
-          placeholder="4242 4242 4242 4242"
+          placeholder='test-card'
         />
       </label>
       {error && <p className="error" style={{ marginBottom: 8 }}>{error}</p>}

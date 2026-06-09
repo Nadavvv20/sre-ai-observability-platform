@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { checkoutDuration } from '../metrics.js';
+import { logInfo, logError } from '../logger.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -17,58 +19,91 @@ interface CheckoutItem {
 router.post(
   '/',
   asyncHandler(async (req, res) => {
-    const [[cart]] = await pool.execute<any[]>(
-      'SELECT id FROM carts WHERE user_id = ?',
-      [req.user!.id]
-    );
-    if (!cart) throw new HttpError(400, 'empty_cart');
-
-    const [items] = await pool.execute<any[]>(
-      `
-      SELECT ci.product_id, ci.quantity, p.price_cents, p.stock, p.name
-      FROM cart_items ci
-      JOIN products p ON p.id = ci.product_id
-      WHERE ci.cart_id = ?
-      `,
-      [(cart as { id: number }).id]
-    );
-
-    if ((items as CheckoutItem[]).length === 0) throw new HttpError(400, 'empty_cart');
-
-    for (const it of items as CheckoutItem[]) {
-      if (it.stock < it.quantity) {
-        throw new HttpError(409, 'insufficient_stock', `not enough stock for ${it.name}`);
-      }
-    }
-
-    const total_cents = (items as CheckoutItem[]).reduce(
-      (acc, it) => acc + it.price_cents * it.quantity,
-      0
-    );
-    const cartId = (cart as { id: number }).id;
-
-    const orderId = await withTransaction(async (conn) => {
-      const [result] = await conn.execute<any>(
-        'INSERT INTO orders (user_id, total_cents, status) VALUES (?, ?, ?)',
-        [req.user!.id, total_cents, 'pending_payment']
+    const start = Date.now();
+    
+    try {
+      const [[cart]] = await pool.execute<any[]>(
+        'SELECT id FROM carts WHERE user_id = ?',
+        [req.user!.id]
       );
-      const id: number = (result as { insertId: number }).insertId;
+      if (!cart) throw new HttpError(400, 'empty_cart');
+
+      const [items] = await pool.execute<any[]>(
+        `
+        SELECT ci.product_id, ci.quantity, p.price_cents, p.stock, p.name
+        FROM cart_items ci
+        JOIN products p ON p.id = ci.product_id
+        WHERE ci.cart_id = ?
+        `,
+        [(cart as { id: number }).id]
+      );
+
+      if ((items as CheckoutItem[]).length === 0) throw new HttpError(400, 'empty_cart');
 
       for (const it of items as CheckoutItem[]) {
-        await conn.execute(
-          'INSERT INTO order_items (order_id, product_id, quantity, price_cents) VALUES (?, ?, ?, ?)',
-          [id, it.product_id, it.quantity, it.price_cents]
-        );
-        await conn.execute(
-          'UPDATE products SET stock = stock - ? WHERE id = ?',
-          [it.quantity, it.product_id]
-        );
+        if (it.stock < it.quantity) {
+          throw new HttpError(409, 'insufficient_stock', `not enough stock for ${it.name}`);
+        }
       }
-      await conn.execute('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
-      return id;
-    });
 
-    res.status(201).json({ order_id: orderId, total_cents, status: 'pending_payment' });
+      const total_cents = (items as CheckoutItem[]).reduce(
+        (acc, it) => acc + it.price_cents * it.quantity,
+        0
+      );
+      const cartId = (cart as { id: number }).id;
+
+      const orderId = await withTransaction(async (conn) => {
+        const [result] = await conn.execute<any>(
+          'INSERT INTO orders (user_id, total_cents, status) VALUES (?, ?, ?)',
+          [req.user!.id, total_cents, 'pending_payment']
+        );
+        const id: number = (result as { insertId: number }).insertId;
+
+        for (const it of items as CheckoutItem[]) {
+          await conn.execute(
+            'INSERT INTO order_items (order_id, product_id, quantity, price_cents) VALUES (?, ?, ?, ?)',
+            [id, it.product_id, it.quantity, it.price_cents]
+          );
+          await conn.execute(
+            'UPDATE products SET stock = stock - ? WHERE id = ?',
+            [it.quantity, it.product_id]
+          );
+        }
+        await conn.execute('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+        return id;
+      });
+
+      const duration = (Date.now() - start) / 1000;
+      checkoutDuration.observe({ status: 'success' }, duration);
+      
+      logInfo({
+        service: 'checkout_service',
+        action: 'process_checkout',
+        message: 'Checkout processed successfully',
+        user_id: req.user!.id,
+        order_id: orderId,
+        total_cents,
+        latency_ms: duration * 1000,
+      });
+
+      res.status(201).json({ order_id: orderId, total_cents, status: 'pending_payment' });
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      checkoutDuration.observe({ status: 'error' }, duration);
+      
+      if (error instanceof HttpError && error.status >= 500) {
+        logError({
+          service: 'checkout_service',
+          action: 'process_checkout',
+          message: 'Checkout failed',
+          user_id: req.user!.id,
+          error,
+          latency_ms: duration * 1000,
+        });
+      }
+      
+      throw error;
+    }
   })
 );
 

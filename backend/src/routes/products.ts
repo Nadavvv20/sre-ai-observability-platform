@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { catalogRequestDuration } from '../metrics.js';
+import { logInfo } from '../logger.js';
 
 const router = Router();
 
 router.get(
   '/',
   asyncHandler(async (req, res) => {
+    const start = Date.now();
     const { search, category, sort } = req.query as {
       search?: string;
       category?: string;
@@ -32,6 +35,18 @@ router.get(
       `SELECT id, sku, name, category, price_cents, stock FROM products ${where} ${order} LIMIT 200`,
       params
     );
+    
+    const duration = (Date.now() - start) / 1000;
+    catalogRequestDuration.observe({ route: '/api/products' }, duration);
+    
+    logInfo({
+      service: 'catalog_service',
+      action: 'view_catalog',
+      message: 'Catalog browsed successfully',
+      latency_ms: duration * 1000,
+      result_count: rows.length,
+    });
+    
     res.json({ products: rows });
   })
 );
