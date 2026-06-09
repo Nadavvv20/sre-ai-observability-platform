@@ -58,9 +58,34 @@ Panels include:
 
 ### 4. AI Observability Service 🤖
 
+**Two Ways to Use:**
+
+#### A. Interactive CLI Chat (Recommended) 💬
+```bash
+cd ai-observer
+npm run chat
+```
+
+Interactive chat interface with:
+- Real-time conversation
+- Colored output showing tool usage
+- Commands: `help`, `clear`, `exit`
+- Persistent conversation history
+
+**Example Session:**
+```
+You > What's the current error rate?
+🔧 Using tool: query_prometheus
+AI > The current error rate is 2.3%, within normal range...
+
+You > Show me payment errors
+🔧 Using tool: search_logs
+AI > Found 3 payment errors in the last hour...
+```
+
+#### B. HTTP API
 **Endpoint**: `POST http://localhost:5000/investigate`
 
-**Example Query:**
 ```bash
 curl -X POST http://localhost:5000/investigate \
   -H "Content-Type: application/json" \

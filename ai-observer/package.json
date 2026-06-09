@@ -1,13 +1,17 @@
 {
   "name": "ai-observer",
   "version": "1.0.0",
-  "description": "",
+  "description": "AI-powered SRE observability agent with CLI chat interface",
   "main": "index.js",
+  "bin": {
+    "sre-chat": "./chat.js"
+  },
   "scripts": {
     "start": "node index.js",
+    "chat": "node chat.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["sre", "observability", "ai", "prometheus", "elasticsearch"],
   "author": "",
   "license": "ISC",
   "type": "module",
