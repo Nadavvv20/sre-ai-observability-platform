@@ -98,6 +98,18 @@ services:
       - prometheus
       - elasticsearch
 
+  ai-service:
+    build: ./ai-observer
+    container_name: shop-ai-service
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    ports:
+      - "5000:5000"
+    networks: [shop]
+    depends_on:
+      - prometheus
+      - elasticsearch
+
 volumes:
   mysql-data:
   prometheus-data:
