@@ -30,7 +30,7 @@ export default function App() {
     <>
       <nav>
         <Link to="/" style={{ display: 'flex', alignItems: 'center' }}>
-          <img src="/logo.png" alt="Helfy" style={{ height: 44, width: 'auto' }} />
+          <img src="/logo.png" alt="PulseCart" style={{ height: 44, width: 'auto', borderRadius: '6px' }} />
         </Link>
         <Link to="/">Shop</Link>
         <Link to="/cart">Cart</Link>
