@@ -1,134 +1,121 @@
-import 'dotenv/config';
 import express from 'express';
-import OpenAI from 'openai';
-import fetch from 'node-fetch';
-import fs from 'fs';
-import path from 'path';
+import { createAIClient, getSystemPrompt } from './ai-client.js';
+import { getSystemOverview, searchLogs, queryPrometheus, toolsDefinitions } from './tools.js';
+import { validateUserInput, redactOutput, scrubSensitiveData } from './guardrails.js';
 
 const app = express();
 app.use(express.json());
 
-const openai = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY, 
-});
-
-async function queryPrometheus(query) {
-    try {
-        const res = await fetch(`http://prometheus:9090/api/v1/query?query=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        return JSON.stringify(data.data.result);
-    } catch (e) {
-        return `Error querying Prometheus: ${e.message}`;
+// Initialize AI Client lazily
+let aiInstance = null;
+function getAI() {
+    if (!aiInstance) {
+        aiInstance = createAIClient();
     }
+    return aiInstance;
 }
-
-async function searchLogs(query) {
-    try {
-        const res = await fetch(`http://elasticsearch:9200/_search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        return JSON.stringify(data.hits.hits.map(h => h._source));
-    } catch (e) {
-        return `Error querying Elasticsearch: ${e.message}`;
-    }
-}
-
-function getMetricCatalog() {
-    try {
-        return fs.readFileSync(path.resolve('./metric_catalog.md'), 'utf-8');
-    } catch (e) {
-        return "Catalog not found.";
-    }
-}
-
-const tools = [
-    {
-        type: "function",
-        function: {
-            name: "query_prometheus",
-            description: "Execute a PromQL query to get metrics (latency, errors, etc.)",
-            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
-        }
-    },
-    {
-        type: "function",
-        function: {
-            name: "search_logs",
-            description: "Search Elasticsearch logs to find specific error messages or session issues",
-            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
-        }
-    },
-    {
-        type: "function",
-        function: {
-            name: "get_metric_catalog",
-            description: "Read the metric catalog to understand what metrics exist and what normal looks like",
-            parameters: { type: "object", properties: {} }
-        }
-    }
-];
 
 app.post('/investigate', async (req, res) => {
     const userQuestion = req.body.question;
-    
+
     if (!userQuestion) {
         return res.status(400).json({ error: 'Question is required' });
     }
-    
+
+    // Pre-AI Guardrail check (0 tokens)
+    const validation = validateUserInput(userQuestion);
+    if (!validation.safe) {
+        return res.status(400).json({
+            error: validation.reason,
+            blocked_by_guardrail: true
+        });
+    }
+
     const messages = [
-        { 
-            role: 'system', 
-            content: 'You are an SRE AI agent. Use your tools to investigate system issues based on the user question. Follow the Triage Loop: Identify Symptom -> Query Metric -> Search Logs -> Form Hypothesis -> Confirm.' 
+        {
+            role: 'system',
+            content: getSystemPrompt()
         },
         { role: 'user', content: userQuestion }
     ];
 
     let turnCount = 0;
-    const MAX_TURNS = 5;
+    const TOOL_TURNS = 2;
 
     try {
-        while (turnCount < MAX_TURNS) {
-            turnCount
+        const { client, model } = getAI();
 
-            console.log(`\n--- Agent Turn ${turnCount} ---`);
+        while (turnCount < TOOL_TURNS) {
+            turnCount++;
+            console.log(`\n--- Agent Turn ${turnCount}/${TOOL_TURNS + 1} ---`);
 
-            const response = await openai.chat.completions.create({
-                model: 'anthropic/claude-4.5-sonnet',
+            const response = await client.chat.completions.create({
+                model: model,
                 messages: messages,
-                tools: tools,
-                tool_choice: "auto"
+                tools: toolsDefinitions,
+                tool_choice: 'auto',
+                max_tokens: 900
             });
 
             const aiMessage = response.choices[0].message;
             messages.push(aiMessage);
 
             if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
-                for (const toolCall of aiMessage.tool_calls) {
+                // Execute tools in parallel
+                const toolPromises = aiMessage.tool_calls.map(async (toolCall) => {
                     const funcName = toolCall.function.name;
-                    const args = JSON.parse(toolCall.function.arguments || "{}");
-                    console.log(`AI called tool: ${funcName} with args:`, args);
-
-                    let toolResult = "";
-                    if (funcName === 'query_prometheus') {
-                        toolResult = await queryPrometheus(args.query);
-                    } else if (funcName === 'search_logs') {
-                        toolResult = await searchLogs(args.query);
-                    } else if (funcName === 'get_metric_catalog') {
-                        toolResult = getMetricCatalog();
+                    let args = {};
+                    try {
+                        args = JSON.parse(toolCall.function.arguments || "{}");
+                    } catch (e) {
+                        args = {};
                     }
 
-                    messages.push({
+                    console.log(`AI calling tool: ${funcName}`);
+
+                    let toolResult = "";
+                    if (funcName === 'get_system_overview') {
+                        toolResult = await getSystemOverview();
+                    } else if (funcName === 'query_prometheus') {
+                        toolResult = await queryPrometheus(args.query);
+                    } else if (funcName === 'search_logs') {
+                        toolResult = await searchLogs(args);
+                    } else {
+                        toolResult = `Tool ${funcName} not recognized.`;
+                    }
+
+                    return {
                         role: 'tool',
                         tool_call_id: toolCall.id,
-                        content: toolResult
-                    });
+                        content: scrubSensitiveData(toolResult)
+                    };
+                });
+
+                const executedResults = await Promise.all(toolPromises);
+                for (const toolResultMsg of executedResults) {
+                    messages.push(toolResultMsg);
                 }
             } else {
                 console.log("Investigation complete.");
-                return res.json({ insight: aiMessage.content });
+                return res.json({ insight: redactOutput(aiMessage.content) });
             }
         }
-        res.json({ insight: "Max iterations reached without a final conclusion." });
+
+        // Final synthesis
+        console.log(`\n--- Synthesis Turn ---`);
+        const synthResponse = await client.chat.completions.create({
+            model: model,
+            messages: [
+                ...messages,
+                { role: 'user', content: 'Provide the final concise SRE assessment in the 🔴/🟡/🟢 format. State Root Cause, Impact, and Recommended Action.' }
+            ],
+            tools: toolsDefinitions,
+            tool_choice: 'auto',
+            max_tokens: 900
+        });
+
+        const synthMsg = synthResponse.choices[0].message;
+        return res.json({ insight: redactOutput(synthMsg.content || 'Investigation complete.') });
     } catch (error) {
         console.error("AI Error:", error);
         res.status(500).json({ error: error.message });
@@ -137,7 +124,26 @@ app.post('/investigate', async (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', service: 'ai-observer' });
+    try {
+        const { config } = getAI();
+        res.json({
+            status: 'healthy',
+            service: 'ai-observer',
+            provider: config.providerName,
+            model: config.model
+        });
+    } catch (e) {
+        res.status(500).json({ status: 'unhealthy', error: e.message });
+    }
 });
 
-app.listen(5000, () => console.log('AI Observability Service listening on port 5000'));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+    console.log(`AI Observability Service listening on port ${PORT}`);
+    try {
+        const { config } = getAI();
+        console.log(`AI Provider: ${config.providerName} | Model: ${config.model}`);
+    } catch (e) {
+        console.warn(`Warning: AI configuration not initialized: ${e.message}`);
+    }
+});

@@ -7,11 +7,14 @@ This application has been fully instrumented with metrics, structured logging, d
 ## 🚀 Quick Start
 
 ```bash
-# Set your OpenRouter API key (required for AI service)
-echo "OPENROUTER_API_KEY='your-key-here'" > .env
+# 1. Configure .env with your AI provider (Groq, Gemini, OpenRouter, or Ollama)
+cp .env.example .env
 
-# Start the entire stack
-docker compose up --build
+# 2. Start application & observability stack safely (localhost bound)
+docker compose up -d --build
+
+# 3. Start AI Observer locally
+cd ai-observer && npm install && npm run chat
 ```
 
 **Access Points:**
@@ -20,7 +23,7 @@ docker compose up --build
 - **Prometheus**: http://localhost:9090
 - **Grafana**: http://localhost:3000 (admin/admin)
 - **Elasticsearch**: http://localhost:9200
-- **AI Observer**: http://localhost:5000
+- **AI Observer**: Local CLI (`npm run chat`)
 
 ## 📊 Observability Stack
 
@@ -197,16 +200,16 @@ environment:
 Then restart: `docker compose up -d backend`
 
 ### AI Service Configuration
-The AI service requires an OpenRouter API key. Create a `.env` file:
+The AI observer supports Groq, Gemini, OpenRouter, and Ollama. Configure `.env` in the root:
 
-```bash
-OPENROUTER_API_KEY='sk-or-v1-your-key-here'
+```ini
+AI_PROVIDER=groq
+AI_API_KEY=gsk_your_groq_api_key_here
 ```
-
-Get your key at: https://openrouter.ai/keys
 
 ## 📚 Documentation Files
 
+- **`Proof-Of-Concept/POC_INCIDENT_REPORT.md`** - Real incident triage tests & guardrail validations
 - **`guidelines.md`** - Log formatting, metric naming, dashboard conventions
 - **`metric_catalog.md`** - Detailed metric definitions and normal baselines
 - **`initial.md`** - Original implementation blueprint (4-step plan)
@@ -217,14 +220,14 @@ Get your key at: https://openrouter.ai/keys
 ✅ **Step 1**: Read guidelines and metric catalog  
 ✅ **Step 2**: Instrument application (metrics + logs)  
 ✅ **Step 3**: Provision observability stack (Prometheus, Elasticsearch, Grafana)  
-✅ **Step 4**: Build AI observability service (multi-turn agent with tools)
+✅ **Step 4**: Build hardened AI observability bot (deterministic Golden Signals, zero-token guardrails, PII redaction)
 
 ## 🐛 Troubleshooting
 
 ### AI Service Not Working
-- Check `.env` file exists with valid `OPENROUTER_API_KEY`
-- Verify service is running: `docker ps | grep ai-service`
-- Check logs: `docker logs shop-ai-service`
+- Check `.env` file exists with valid `AI_API_KEY` and `AI_PROVIDER`
+- Test local execution: `cd ai-observer && node chat.js`
+- Verify Prometheus (`http://localhost:9090`) and Elasticsearch (`http://localhost:9200`) are accessible from the host
 
 ### No Metrics in Prometheus
 - Verify backend is running: `curl http://localhost:4000/metrics`

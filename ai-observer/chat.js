@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
-import 'dotenv/config';
 import readline from 'readline';
-import OpenAI from 'openai';
 import fetch from 'node-fetch';
-import fs from 'fs';
-import path from 'path';
+import { createAIClient, getSystemPrompt } from './ai-client.js';
+import { getSystemOverview, searchLogs, queryPrometheus, toolsDefinitions } from './tools.js';
+import { validateUserInput, redactOutput, scrubSensitiveData } from './guardrails.js';
 
 // Colors for terminal output
 const colors = {
@@ -20,155 +19,144 @@ const colors = {
     magenta: '\x1b[35m'
 };
 
-// Initialize OpenAI client lazily
-let openai = null;
-
-function getOpenAI() {
-    if (!openai) {
-        openai = new OpenAI({
-            baseURL: 'https://openrouter.ai/api/v1',
-            apiKey: process.env.OPENROUTER_API_KEY,
-        });
+// Initialize AI Client and configuration
+let aiInstance = null;
+function getAI() {
+    if (!aiInstance) {
+        aiInstance = createAIClient();
     }
-    return openai;
+    return aiInstance;
 }
 
-// Tool functions
-async function queryPrometheus(query) {
-    try {
-        const res = await fetch(`http://localhost:9090/api/v1/query?query=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        return JSON.stringify(data.data.result, null, 2);
-    } catch (e) {
-        return `Error querying Prometheus: ${e.message}`;
-    }
-}
-
-async function searchLogs(query) {
-    try {
-        const res = await fetch(`http://localhost:9200/_search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        return JSON.stringify(data.hits.hits.map(h => h._source), null, 2);
-    } catch (e) {
-        return `Error querying Elasticsearch: ${e.message}`;
-    }
-}
-
-function getMetricCatalog() {
-    try {
-        return fs.readFileSync(path.resolve('./metric_catalog.md'), 'utf-8');
-    } catch (e) {
-        return "Catalog not found.";
-    }
-}
-
-const tools = [
-    {
-        type: "function",
-        function: {
-            name: "query_prometheus",
-            description: "Execute a PromQL query to get metrics (latency, errors, etc.)",
-            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
-        }
-    },
-    {
-        type: "function",
-        function: {
-            name: "search_logs",
-            description: "Search Elasticsearch logs to find specific error messages or session issues",
-            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
-        }
-    },
-    {
-        type: "function",
-        function: {
-            name: "get_metric_catalog",
-            description: "Read the metric catalog to understand what metrics exist and what normal looks like",
-            parameters: { type: "object", properties: {} }
-        }
-    }
-];
-
-// Conversation history
-const conversationHistory = [
+// Conversation history initialized with optimized System Prompt
+let conversationHistory = [
     {
         role: 'system',
-        content: 'You are an SRE AI agent helping investigate system issues. Use your tools to query metrics and logs. Be concise but thorough. Follow the Triage Loop: Identify Symptom → Query Metric → Search Logs → Form Hypothesis → Confirm.'
+        content: getSystemPrompt()
     }
 ];
 
+// Multi-turn reasoning loop with fast single-shot telemetry and parallel execution
 async function investigate(userQuestion) {
+    // Keep conversation clean — retain system message and at most last assistant summary
+    if (conversationHistory.length > 8) {
+        const systemMsg = conversationHistory[0];
+        const lastAssistant = conversationHistory.filter(m => m.role === 'assistant' && m.content).slice(-1)[0];
+        conversationHistory = [systemMsg];
+        if (lastAssistant) {
+            conversationHistory.push({ role: 'assistant', content: `[Previous SRE assessment]: ${lastAssistant.content.slice(0, 300)}...` });
+        }
+    }
+
     conversationHistory.push({ role: 'user', content: userQuestion });
 
     let turnCount = 0;
-    const MAX_TURNS = 5;
+    const TOOL_TURNS = 2;   // Fast triage: Turn 1 telemetry, Turn 2 diagnosis
+    const { client, model } = getAI();
 
     try {
-        while (turnCount < MAX_TURNS) {
+        while (turnCount < TOOL_TURNS) {
             turnCount++;
-            
+
             if (turnCount > 1) {
-                console.log(`${colors.dim}[Turn ${turnCount}/${MAX_TURNS}]${colors.reset}`);
+                console.log(`${colors.dim}[Turn ${turnCount}/${TOOL_TURNS + 1}]${colors.reset}`);
             }
 
-            const response = await getOpenAI().chat.completions.create({
-                model: 'anthropic/claude-4.5-sonnet',
+            const response = await client.chat.completions.create({
+                model: model,
                 messages: conversationHistory,
-                tools: tools,
-                tool_choice: "auto"
+                tools: toolsDefinitions,
+                tool_choice: 'auto',
+                max_tokens: 900
             });
 
             const aiMessage = response.choices[0].message;
             conversationHistory.push(aiMessage);
 
             if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
-                for (const toolCall of aiMessage.tool_calls) {
+                // Execute tool calls in parallel
+                const toolPromises = aiMessage.tool_calls.map(async (toolCall) => {
                     const funcName = toolCall.function.name;
-                    const args = JSON.parse(toolCall.function.arguments || "{}");
-                    
-                    console.log(`${colors.yellow}🔧 Using tool: ${colors.bright}${funcName}${colors.reset}`);
-                    if (args.query) {
-                        console.log(`${colors.dim}   Query: ${args.query}${colors.reset}`);
+                    let args = {};
+                    try {
+                        args = JSON.parse(toolCall.function.arguments || "{}");
+                    } catch (e) {
+                        args = {};
                     }
+
+                    const queryDisplay = args.query ? ` → ${args.query}` : (args.status_code ? ` → ${args.status_code}` : '');
+                    console.log(`${colors.yellow}🔧 Tool: ${colors.bright}${funcName}${colors.reset}${colors.dim}${queryDisplay}${colors.reset}`);
 
                     let toolResult = "";
-                    if (funcName === 'query_prometheus') {
+                    if (funcName === 'get_system_overview') {
+                        toolResult = await getSystemOverview();
+                    } else if (funcName === 'query_prometheus') {
                         toolResult = await queryPrometheus(args.query);
                     } else if (funcName === 'search_logs') {
-                        toolResult = await searchLogs(args.query);
-                    } else if (funcName === 'get_metric_catalog') {
-                        toolResult = getMetricCatalog();
+                        toolResult = await searchLogs(args);
+                    } else {
+                        toolResult = `Tool ${funcName} not recognized.`;
                     }
 
-                    conversationHistory.push({
+                    return {
                         role: 'tool',
                         tool_call_id: toolCall.id,
-                        content: toolResult
-                    });
+                        content: scrubSensitiveData(toolResult)
+                    };
+                });
+
+                const executedResults = await Promise.all(toolPromises);
+                for (const toolResultMsg of executedResults) {
+                    conversationHistory.push(toolResultMsg);
                 }
             } else {
-                // Final answer
-                return aiMessage.content;
+                // Model answered directly
+                return redactOutput(aiMessage.content);
             }
         }
-        return `⚠️  Reached maximum iterations (${MAX_TURNS}) without a final conclusion.`;
+
+        // Final synthesis call if tool turns were used
+        console.log(`${colors.dim}[Synthesis Turn]${colors.reset}`);
+        const synthResponse = await client.chat.completions.create({
+            model: model,
+            messages: [
+                ...conversationHistory,
+                { role: 'user', content: 'Provide the final concise SRE assessment in the 🔴/🟡/🟢 format. State Root Cause, Impact, and Recommended Action.' }
+            ],
+            tools: toolsDefinitions,
+            tool_choice: 'auto',
+            max_tokens: 900
+        });
+
+        const synthMsg = synthResponse.choices[0].message;
+        conversationHistory.push(synthMsg);
+
+        if (synthMsg.content) {
+            return redactOutput(synthMsg.content);
+        }
+
+        // Fallback if model made another tool call on synthesis
+        if (synthMsg.tool_calls && synthMsg.tool_calls.length > 0) {
+            return 'Investigation completed. Check recent errors and metrics in system overview.';
+        }
+
+        return 'Investigation concluded.';
+
     } catch (error) {
         return `${colors.red}❌ Error: ${error.message}${colors.reset}`;
     }
 }
 
-function printBanner() {
+function printBanner(config) {
     console.log(`${colors.cyan}${colors.bright}`);
     console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║         🤖 SRE AI Observer - Interactive Chat            ║');
+    console.log('║         🤖 SRE AI Observer - Production Agent            ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
     console.log(`${colors.reset}`);
-    console.log(`${colors.dim}Connected to: Prometheus (localhost:9090) & Elasticsearch (localhost:9200)${colors.reset}`);
-    console.log(`${colors.dim}Type your questions or commands:${colors.reset}`);
-    console.log(`${colors.green}  • Ask about system status, errors, metrics${colors.reset}`);
-    console.log(`${colors.green}  • Type 'help' for examples${colors.reset}`);
-    console.log(`${colors.green}  • Type 'clear' to reset conversation${colors.reset}`);
-    console.log(`${colors.green}  • Type 'exit' or 'quit' to leave${colors.reset}`);
+    console.log(`${colors.yellow}Provider : ${colors.bright}${config.providerName}${colors.reset}`);
+    console.log(`${colors.yellow}Model    : ${colors.bright}${config.model}${colors.reset}`);
+    console.log(`${colors.dim}Targets  : Prometheus (localhost:9090) & Elasticsearch (localhost:9200)${colors.reset}`);
+    console.log(`${colors.dim}Commands : 'help', 'clear', 'exit'${colors.reset}`);
     console.log();
 }
 
@@ -176,23 +164,22 @@ function printHelp() {
     console.log(`${colors.cyan}${colors.bright}Example Questions:${colors.reset}`);
     console.log(`${colors.green}  • "What's the current system status?"${colors.reset}`);
     console.log(`${colors.green}  • "Are there any errors in the last 15 minutes?"${colors.reset}`);
-    console.log(`${colors.green}  • "Why is the payment service slow?"${colors.reset}`);
-    console.log(`${colors.green}  • "Show me recent cart errors"${colors.reset}`);
-    console.log(`${colors.green}  • "What's the P95 latency for checkout?"${colors.reset}`);
-    console.log(`${colors.green}  • "Is there anything unusual happening?"${colors.reset}`);
+    console.log(`${colors.green}  • "Why is the checkout duration high?"${colors.reset}`);
+    console.log(`${colors.green}  • "Show me recent cart errors and active DB connections"${colors.reset}`);
+    console.log(`${colors.green}  • "What is the P95 latency for catalog requests?"${colors.reset}`);
+    console.log(`${colors.green}  • "Is the backend down?"${colors.reset}`);
     console.log();
 }
 
 async function main() {
-    // Check for API key
-    if (!process.env.OPENROUTER_API_KEY) {
-        console.error(`${colors.red}❌ Error: OPENROUTER_API_KEY environment variable not set${colors.reset}`);
-        console.log(`${colors.yellow}Please set it in your .env file or export it:${colors.reset}`);
-        console.log(`${colors.dim}  export OPENROUTER_API_KEY='your-key-here'${colors.reset}`);
+    try {
+        const { config } = getAI();
+        printBanner(config);
+    } catch (e) {
+        console.error(`${colors.red}❌ Configuration Error: ${e.message}${colors.reset}`);
+        console.log(`${colors.yellow}Please configure your .env file with AI_PROVIDER and AI_API_KEY.${colors.reset}\n`);
         process.exit(1);
     }
-
-    printBanner();
 
     const rl = readline.createInterface({
         input: process.stdin,
@@ -210,7 +197,7 @@ async function main() {
             return;
         }
 
-        // Handle commands
+        // Commands
         if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
             console.log(`${colors.cyan}👋 Goodbye!${colors.reset}`);
             process.exit(0);
@@ -223,15 +210,27 @@ async function main() {
         }
 
         if (input.toLowerCase() === 'clear') {
-            conversationHistory.length = 1; // Keep only system message
+            conversationHistory = [
+                {
+                    role: 'system',
+                    content: getSystemPrompt()
+                }
+            ];
             console.log(`${colors.green}✓ Conversation cleared${colors.reset}\n`);
             rl.prompt();
             return;
         }
 
-        // Process the question
+        // Pre-AI Guardrail: Block jailbreaks, malicious payloads, and non-SRE topics (0 tokens)
+        const validation = validateUserInput(input);
+        if (!validation.safe) {
+            console.log(`${colors.yellow}${validation.reason}${colors.reset}\n`);
+            rl.prompt();
+            return;
+        }
+
         console.log(`${colors.magenta}${colors.bright}AI >${colors.reset} ${colors.dim}Investigating...${colors.reset}\n`);
-        
+
         try {
             const answer = await investigate(input);
             console.log(`${colors.magenta}${colors.bright}AI >${colors.reset} ${answer}\n`);

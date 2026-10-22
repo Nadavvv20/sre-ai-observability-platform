@@ -2,6 +2,7 @@ services:
   mysql:
     image: mysql:8.4
     container_name: shop-mysql
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: shop
@@ -10,7 +11,7 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     networks: [shop]
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "shop", "-pshoppass"]
@@ -21,6 +22,7 @@ services:
   backend:
     build: ./backend
     container_name: shop-backend
+    restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
@@ -37,20 +39,30 @@ services:
       ELASTICSEARCH_URL: http://elasticsearch:9200
       NODE_ENV: production
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     networks: [shop]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   frontend:
     build: ./frontend
     container_name: shop-frontend
-    depends_on: [backend]
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     networks: [shop]
 
   prometheus:
     image: prom/prometheus:latest
     container_name: shop-prometheus
+    restart: unless-stopped
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -58,13 +70,14 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks: [shop]
     depends_on: [backend]
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: shop-elasticsearch
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -72,7 +85,7 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     networks: [shop]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
@@ -83,6 +96,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: shop-grafana
+    restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_SECURITY_ADMIN_USER=admin
@@ -92,19 +106,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
-    networks: [shop]
-    depends_on:
-      - prometheus
-      - elasticsearch
-
-  ai-service:
-    build: ./ai-observer
-    container_name: shop-ai-service
-    environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-    ports:
-      - "5000:5000"
+      - "127.0.0.1:3000:3000"
     networks: [shop]
     depends_on:
       - prometheus
