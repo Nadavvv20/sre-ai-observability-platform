@@ -1,30 +1,3 @@
-# Observability Implementation Guide
-
-## ✅ Implementation Complete
-
-This application has been fully instrumented with metrics, structured logging, dashboards, and an AI-powered observability service following the blueprint in `initial.md`.
-
-## 🚀 Quick Start
-
-```bash
-# 1. Configure .env with your AI provider (Groq, Gemini, OpenRouter, or Ollama)
-cp .env.example .env
-
-# 2. Start application & observability stack safely (localhost bound)
-docker compose up -d --build
-
-# 3. Start AI Observer locally
-cd ai-observer && npm install && npm run chat
-```
-
-**Access Points:**
-- **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:4000
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000 (admin/admin)
-- **Elasticsearch**: http://localhost:9200
-- **AI Observer**: Local CLI (`npm run chat`)
-
 ## 📊 Observability Stack
 
 ### 1. Metrics (Prometheus)
