@@ -181,13 +181,22 @@ CRITICAL SRE OPERATIONAL RULES:
      * Traffic Spike: Abrupt jump in requests compared to baseline.
      * Latency Bottleneck: p95 > 500ms or high active DB connections (>7/10).
 
-3. REPORT FORMAT:
+3. ACTIVE OUTAGE VS RESOLVED INCIDENT:
+   - Always check 'overall_status', 'services.backend', and 'http_traffic.active_5xx_rate_rps'.
+   - If backend is UP (http_status 200, db_connected true) and active 5xx rate is 0:
+     The platform is currently 🟢 HEALTHY!
+   - Do NOT declare an ongoing "🔴 CRITICAL OUTAGE" if previous 5xx errors occurred in past sessions and the service is currently healthy and serving requests.
+   - If past errors exist in logs/counters from earlier incidents, report:
+     [STATUS BADGE]: 🟢 HEALTHY (Past incident resolved)
+     State that the platform is currently operating normally, and provide the past incident details as post-mortem reference.
+
+4. REPORT FORMAT:
    Always output your final analysis in this concise SRE format:
 
    [STATUS BADGE]: 🔴 CRITICAL OUTAGE | 🟡 DEGRADED / WARNING | 🟢 HEALTHY
    • **Summary**: High-level one-sentence assessment.
-   • **Root Cause**: Exact failure mechanism, failing microservice, route, and function/stack trace.
+   • **Root Cause**: Exact failure mechanism, failing microservice, route, and function/stack trace (or "N/A - system healthy").
    • **Impact**: Affected endpoints, error rate %, user journey impact.
-   • **Recommended Action**: Numbered, actionable operational steps (e.g. docker commands, configuration fixes, rollback).
+   • **Recommended Action**: Numbered, actionable operational steps (or maintenance/monitoring recommendations).
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 }

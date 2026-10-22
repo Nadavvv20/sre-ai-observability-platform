@@ -25,7 +25,7 @@ export async function getSystemOverview() {
 
     try {
         // Run all telemetry checks in parallel for maximum speed
-        const [backendHealth, promTargets, promRequests, promDbPool, promLatencies, esErrors] = await Promise.allSettled([
+        const [backendHealth, promTargets, promRequests, promDbPool, promLatencies, esErrors, promActiveErrors] = await Promise.allSettled([
             // 1. Backend /healthz (tests DB connectivity)
             fetch(`${BACKEND_HOST}/healthz`, { timeout: 3000 }).then(r => r.json().then(data => ({ status: r.status, data }))).catch(e => ({ status: 0, error: e.message })),
 
@@ -41,14 +41,19 @@ export async function getSystemOverview() {
             // 5. Latencies (p95)
             fetch(`${PROM_HOST}/api/v1/query?query=${encodeURIComponent('histogram_quantile(0.95, sum(rate(ecommerce_catalog_request_duration_seconds_bucket[5m])) by (le))')}`, { timeout: 3000 }).then(r => r.json()).catch(e => ({ error: e.message })),
 
-            // 6. Elasticsearch recent error & warning logs (last 1 hour)
-            searchLogsInternal({ status_code: '4xx,5xx', time_range: '1h', limit: 8 })
+            // 6. Elasticsearch recent error & warning logs (last 15m)
+            searchLogsInternal({ status_code: '4xx,5xx', time_range: '15m', limit: 5 }),
+
+            // 7. Active 5xx error rate (instantaneous in last 2m)
+            fetch(`${PROM_HOST}/api/v1/query?query=${encodeURIComponent('sum(rate(ecommerce_http_requests_total{status_code=~"5.."}[2m]))')}`, { timeout: 3000 }).then(r => r.json()).catch(e => ({ error: e.message }))
         ]);
 
         // --- Process Backend Health ---
+        let isBackendHealthy = false;
         if (backendHealth.status === 'fulfilled') {
             const bh = backendHealth.value;
             if (bh.status === 200 && bh.data?.ok) {
+                isBackendHealthy = true;
                 overview.services.backend = { status: 'UP', http_status: 200, db_connected: true };
             } else {
                 overview.services.backend = {
@@ -63,6 +68,15 @@ export async function getSystemOverview() {
             overview.services.backend = { status: 'DOWN', error: backendHealth.reason?.message };
             overview.alerts.push(`[CRITICAL] Backend unreachable on port 4000`);
         }
+
+        // --- Process Active 5xx Rate ---
+        let active5xxRate = 0;
+        if (promActiveErrors?.status === 'fulfilled' && promActiveErrors.value?.data?.result?.[0]) {
+            active5xxRate = parseFloat(promActiveErrors.value.data.result[0].value?.[1] || '0');
+        }
+
+        // Is there an active incident occurring right now?
+        const isActiveOutage = !isBackendHealthy || active5xxRate > 0;
 
         // --- Process Prometheus Targets ---
         if (promTargets.status === 'fulfilled' && promTargets.value?.data?.activeTargets) {
@@ -113,6 +127,7 @@ export async function getSystemOverview() {
             const errorRate = totalReqs > 0 ? ((total5xx / totalReqs) * 100).toFixed(1) : 0;
             overview.http_traffic = {
                 total_app_requests: totalReqs,
+                active_5xx_rate_rps: Number(active5xxRate.toFixed(2)),
                 status_codes: byCode,
                 summary: {
                     success_2xx: total2xx,
@@ -123,10 +138,13 @@ export async function getSystemOverview() {
                 routes: byRoute
             };
 
-            if (total5xx > 0) {
-                overview.alerts.push(`[CRITICAL] Found ${total5xx} server-side HTTP 5xx errors (${errorRate}% error rate)`);
+            if (isActiveOutage && total5xx > 0) {
+                overview.alerts.push(`[CRITICAL] Active 5xx errors occurring right now (${active5xxRate.toFixed(2)} req/s active error rate)`);
+            } else if (total5xx > 0) {
+                overview.alerts.push(`[HISTORICAL / RESOLVED] Platform is currently HEALTHY (0 active errors, /healthz 200). ${total5xx} past 5xx errors recorded from a previous incident.`);
             }
-            if (total4xx > 5) {
+
+            if (total4xx > 10) {
                 overview.alerts.push(`[WARNING] Elevated 4xx client errors (${total4xx} requests)`);
             }
         }
@@ -153,9 +171,14 @@ export async function getSystemOverview() {
         // --- Process Recent Logs from Elasticsearch ---
         if (esErrors.status === 'fulfilled' && esErrors.value) {
             overview.recent_errors = esErrors.value;
-            if (esErrors.value.length > 0) {
-                const latestErr = esErrors.value[0];
-                overview.alerts.push(`[LOG ERROR] ${latestErr.service || 'app'}: ${latestErr.message || latestErr.error || 'error logged'}`);
+            const errorLogs = esErrors.value.filter(l => l.severity === 'error' || l.status_code >= 500);
+            if (errorLogs.length > 0) {
+                const latestErr = errorLogs[0];
+                if (isActiveOutage) {
+                    overview.alerts.push(`[CRITICAL LOG] ${latestErr.service || 'app'}: ${latestErr.message || latestErr.error || 'error logged'}`);
+                } else {
+                    overview.alerts.push(`[HISTORICAL LOG] Resolved error from ${latestErr.timestamp}: ${latestErr.service || 'app'}: ${latestErr.message || latestErr.error}`);
+                }
             }
         }
 
