@@ -122,6 +122,7 @@ export function loadMetricCatalog() {
 
     const possibleCatalogPaths = [
         path.resolve(process.cwd(), 'metric_catalog.md'),
+        path.resolve(process.cwd(), 'ai-observer/metric_catalog.md'),
         path.resolve(__dirname, 'metric_catalog.md'),
         path.resolve(process.cwd(), 'sre-store/ai-observer/metric_catalog.md'),
     ];
